@@ -1,51 +1,33 @@
 #!/bin/bash
 
-# ==============================
-#  VPS Setup Script by John Kylle
-#  Includes XFCE, VNC, noVNC
-#  With options for Playit, Cloudflare Tunnel, or Ngrok
-#  Includes login monitoring and 24/7 keepalive
-# ==============================
+# === JOHN VPS Setup ===
+echo "=================================="
+echo "      🚀 Starting John VPS Setup"
+echo "=================================="
 
-# Prompt VPS code and show SSH command
-read -p "Enter your VPS code: " vpscode
-clear
-echo "✅ VPS Code set to: $vpscode"
-echo "🛜 Use this SSH command to connect later:"
-echo "ssh -p 22673 root@147.185.221.30"
-echo "(Enter your VPS password when prompted)"
+# Update system
+apt update -y && apt upgrade -y
 
-# Add VPS code to /etc/hosts
-sudo tee /etc/hosts > /dev/null <<EOF
-127.0.0.1       localhost $vpscode
-::1             localhost ip6-localhost ip6-loopback
-fe00::          ip6-localnet
-ff00::          ip6-mcastprefix
-ff02::1         ip6-allnodes
-ff02::2         ip6-allrouters
-EOF
+# Install essentials
+apt install -y curl sudo wget git net-tools htop neofetch nano unzip ufw
 
-# Update system and install essentials
-sudo apt update && sudo apt install -y \
-  htop neofetch curl wget nano ufw \
-  xfce4 xfce4-goodies tightvncserver apache2 \
-  python3 python3-pip git unzip net-tools
+# Set hostname
+hostnamectl set-hostname john-vps
 
-# Set SSH login banner
-sudo tee /etc/update-motd.d/99-johnvps > /dev/null <<EOF
-#!/bin/bash
-echo "\e[1;32m=============================="
-echo "       🖥️  JOHN VPS"
-echo " Welcome to your 24/7 VPS!"
-echo "==============================\e[0m"
-neofetch
-EOF
-sudo chmod +x /etc/update-motd.d/99-johnvps
+# Setup MOTD banner
+echo 'echo -e "\e[1;32mWelcome to JOHN VPS!\e[0m"' >> /etc/profile.d/john-vps-banner.sh
+chmod +x /etc/profile.d/john-vps-banner.sh
 
-# Set up VNC
-vncserver
-vncserver -kill :1
+# Install XFCE, VNC, and noVNC
+apt install -y xfce4 xfce4-goodies tightvncserver
+apt install -y websockify novnc python3-websockify
+
+# Set up VNC password (default: 123456)
 mkdir -p ~/.vnc
+echo "123456" | vncpasswd -f > ~/.vnc/passwd
+chmod 600 ~/.vnc/passwd
+
+# Create VNC startup script
 cat > ~/.vnc/xstartup <<EOF
 #!/bin/bash
 xrdb $HOME/.Xresources
@@ -53,61 +35,75 @@ startxfce4 &
 EOF
 chmod +x ~/.vnc/xstartup
 
-# Install and configure noVNC
-mkdir -p ~/novnc && cd ~/novnc
-git clone https://github.com/novnc/noVNC.git .
-git clone https://github.com/novnc/websockify
+# Start VNC server once to generate files
+vncserver :1 -geometry 1280x720 -depth 24
+vncserver -kill :1
 
-# Start noVNC on port 6080 in background
-./utils/novnc_proxy --vnc localhost:5901 &
+# Create noVNC startup script
+cat > /usr/local/bin/novnc-start <<EOF
+#!/bin/bash
+vncserver :1 -geometry 1280x720 -depth 24
+websockify --web=/usr/share/novnc/ 6080 localhost:5901
+EOF
+chmod +x /usr/local/bin/novnc-start
 
-# Ask for tunnel option
-echo "Choose tunnel option:"
-echo "1) Playit"
-echo "2) Cloudflare Tunnel"
-echo "3) Ngrok"
-read -p "Enter your choice [1-3]: " tunnel_choice
+# Ask user about tunnel option
+echo ""
+echo "Choose Tunnel Method:"
+echo "[1] Cloudflare Tunnel"
+echo "[2] Ngrok"
+echo "[3] Playit Tunnel"
+echo "[4] None"
+read -p "Enter option [1-4]: " tunnel_option
 
-# Tunnel Installers
-if [ "$tunnel_choice" = "1" ]; then
-  echo "Installing Playit..."
-  curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg >/dev/null
-  echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
-  sudo apt update && sudo apt install -y playit
-  playit &
-elif [ "$tunnel_choice" = "2" ]; then
-  echo "Installing Cloudflare Tunnel..."
-  curl -fsSL https://developers.cloudflare.com/cloudflare-one/static/downloads/cloudflared-linux-amd64.deb -o cloudflared.deb
-  sudo dpkg -i cloudflared.deb
-  echo "Run 'cloudflared tunnel login' manually to complete setup."\  cloudflared service install
-elif [ "$tunnel_choice" = "3" ]; then
-  echo "Installing Ngrok..."
-  curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-  echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-  sudo apt update && sudo apt install -y ngrok
-  echo "Paste your auth token from https://dashboard.ngrok.com"
-  read -p "Auth token: " authtoken
-  ngrok config add-authtoken $authtoken
-  ngrok tcp 5901 &
-else
-  echo "Invalid option. Skipping tunnel setup."
-fi
+case $tunnel_option in
+  1)
+    echo "Installing Cloudflare Tunnel..."
+    curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+    chmod +x /usr/local/bin/cloudflared
+    echo "Run: cloudflared tunnel --url http://localhost:6080"
+    ;;
+  2)
+    echo "Installing Ngrok..."
+    curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+    echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | tee /etc/apt/sources.list.d/ngrok.list
+    apt update && apt install ngrok
+    echo "Run: ngrok http 6080"
+    ;;
+  3)
+    echo "Installing Playit Tunnel..."
+    wget https://playit-cloud.github.io/hosted/client/playit-linux.zip
+    unzip playit-linux.zip
+    chmod +x playit
+    mv playit /usr/local/bin/
+    echo "Run: playit"
+    ;;
+  *)
+    echo "Skipping tunnel installation."
+    ;;
+esac
 
-# Add keep-alive loop for 24/7 activity
-cat > ~/keepalive.sh <<EOF
+# 24/7 keep-alive script
+cat > /usr/local/bin/keep-alive.sh <<EOF
 #!/bin/bash
 while true; do
-  echo "[KeepAlive] VPS is alive - \$(date)"
+  echo "🟢 John VPS running - $(date)"
   sleep 300
 done
 EOF
-chmod +x ~/keepalive.sh
-nohup ~/keepalive.sh >/dev/null 2>&1 &
+chmod +x /usr/local/bin/keep-alive.sh
+nohup bash /usr/local/bin/keep-alive.sh >/dev/null 2>&1 &
 
-# Final Output
-echo -e "\n✅ VPS setup complete!"
-echo "🖥️ Desktop: XFCE with VNC + noVNC"
-echo "🔒 Tunnel: $( [ "$tunnel_choice" = "1" ] && echo 'Playit' || ( [ "$tunnel_choice" = "2" ] && echo 'Cloudflare Tunnel' || echo 'Ngrok'))"
-echo "🕒 Keep-alive loop is running 24/7"
-echo "ℹ️ SSH Login: ssh -p 22673 root@147.185.221.30"
-echo "🎉 Enjoy John VPS!"
+# Auto-start info
+ip=$(curl -s ifconfig.me)
+port=$(ss -tnlp | grep ssh | awk '{print $4}' | head -n1 | cut -d: -f2)
+echo ""
+echo "✅ Setup Complete!"
+echo "Login via:"
+echo ""
+echo "👉 ssh -p $port root@$ip"
+echo "🖥️  Then run: novnc-start"
+echo ""
+
+# Show system info
+neofetch
